@@ -7,7 +7,8 @@ import {
 
 interface LetterboxdSettings {
 	username: string;
-	dateFormat: string;
+	dateFormat: string; // Used for daily note links (template)
+	displayDateFormat: string; // Used for general date display
 	path: string;
 	sort: string;
 	callout: 'List' | 'ListReview' | 'Callout' | 'CalloutPoster';
@@ -92,6 +93,7 @@ class FileSelect extends FuzzySuggestModal<TAbstractFile | string> {
 const DEFAULT_SETTINGS: LetterboxdSettings = {
 	username: '',
 	dateFormat: getDailyNoteSettings().format ?? '',
+	displayDateFormat: 'YYYY-MM-DD',
 	path: 'Letterboxd Diary',
 	sort: 'Old',
 	callout: 'List',
@@ -149,11 +151,10 @@ function starParser(rating: number | undefined, star: number): string {
 	}
 }
 
-function getFormattedDate(dateString: string, settings: LetterboxdSettings): string {
-	const watchedDate = settings.dateFormat
-		? moment(dateString).format(settings.dateFormat)
+function getFormattedDate(dateString: string, dateFormat: string): string {
+	return dateFormat
+		? moment(dateString).format(dateFormat)
 		: dateString;
-	return settings.linkDate ? `[[${watchedDate}]]` : watchedDate;
 }
 
 function extractReview(descriptionHtml: string): string | null {
@@ -194,7 +195,6 @@ function generateDiaryEntry(settings: LetterboxdSettings, item: RSSEntry, intern
 	}
 	
 	const filmTitle = decodeHtmlEntities(item['letterboxd:filmTitle']);
-	const watchedDate = getFormattedDate(item['letterboxd:watchedDate'], settings);
 
 	let stars = starParser(item['letterboxd:memberRating'], settings.stars);
 	const reference = (() => {
@@ -206,15 +206,29 @@ function generateDiaryEntry(settings: LetterboxdSettings, item: RSSEntry, intern
 
 	const link = internalLink ? internalLink : `[${filmTitle}](${item['link']})`;
 
+	let displayDate: string;
+	let watchedPhrase: string;
+
+	if (item['letterboxd:watchedDate']) {
+		const formattedDateForLink = getFormattedDate(item['letterboxd:watchedDate'], settings.dateFormat);
+		const formattedDateForDisplay = getFormattedDate(item['letterboxd:watchedDate'], settings.displayDateFormat);
+		displayDate = settings.linkDate ? `[[${formattedDateForLink}]]` : formattedDateForDisplay;
+		watchedPhrase = `Watched ${link} ${stars} on ${displayDate}`;
+	} else {
+		const formattedDateForDisplay = getFormattedDate(item.pubDate, settings.displayDateFormat);
+		displayDate = formattedDateForDisplay; // No linking for pubDate
+		watchedPhrase = `Marked as watched ${link} ${stars} on ${displayDate}`;
+	}
+
 	switch (settings.callout) {
 		case 'List':
-			return `- ${stars?.length ? `Reviewed ${link} ` + stars : `Watched ${link}`} on ${watchedDate}`;
+			return `- ${watchedPhrase}`;
 		case 'ListReview':
-			return `- ${reviewText ? `Reviewed ` : `Watched `} ${link} ${stars} on ${watchedDate} ${reviewText ? `\r >${reviewText}\n` : ''}`;
+			return `- ${watchedPhrase} ${reviewText ? `\r >${reviewText}\n` : ''}`;
 		case 'Callout':
-			return `> [!letterboxd]+ ${item['letterboxd:memberRating'] !== undefined || reviewText ? 'Review: ' : 'Watched: '} ${link} ${stars} - ${watchedDate} \r> ${reviewText ? reviewText : ''}${reference}\n`;
+			return `> [!letterboxd]+ ${item['letterboxd:memberRating'] !== undefined || reviewText ? 'Review: ' : 'Watched: '} ${link} ${stars} - ${displayDate} \r> ${reviewText ? reviewText : ''}${reference}\n`;
 		case 'CalloutPoster':
-			return `> [!letterboxd]+ ${item['letterboxd:memberRating'] !== undefined || reviewText ? 'Review: ' : 'Watched: '} ${link} ${stars} - ${watchedDate} \r> ${reviewText ? img ? `![${filmTitle}|200](${img}) \r> ${reviewText}` : reviewText : ''}${reference}\n`;
+			return `> [!letterboxd]+ ${item['letterboxd:memberRating'] !== undefined || reviewText ? 'Review: ' : 'Watched: '} ${link} ${stars} - ${displayDate} \r> ${reviewText ? img ? `![${filmTitle}|200](${img}) \r> ${reviewText}` : reviewText : ''}${reference}\n`;
 	}
 }
 
@@ -338,13 +352,24 @@ export default class LetterboxdPlugin extends Plugin {
 
 		const url = item.link;
 		const score = item['letterboxd:memberRating'];
-		const watchedDateFormatted = getFormattedDate(item['letterboxd:watchedDate'], this.settings);
 		const isRewatch = item['letterboxd:rewatch'];
 		
-		const reviewBlock = extractReviewBlockquote(item.description);
-		const activityLine = `- **Watched:** ${watchedDateFormatted} **Rating:** ${score ?? '-'} **Rewatch:** ${isRewatch}`;
+		let activityDateLink: string;
+		let activityDatePrefix: string;
 
-		const file = this.app.vault.getAbstractFileByPath(path);
+		if (item['letterboxd:watchedDate']) {
+			const formattedDateForLink = getFormattedDate(item['letterboxd:watchedDate'], this.settings.dateFormat);
+			const formattedDateForDisplay = getFormattedDate(item['letterboxd:watchedDate'], this.settings.displayDateFormat);
+			activityDateLink = this.settings.linkDate ? `[[${formattedDateForLink}]]` : formattedDateForDisplay;
+			activityDatePrefix = '**Watched:**';
+		} else {
+			const formattedDateForDisplay = getFormattedDate(item.pubDate, this.settings.displayDateFormat);
+			activityDateLink = formattedDateForDisplay; // No link for pubDate
+			activityDatePrefix = '**Marked as watched:**';
+		}
+		
+		const reviewBlock = extractReviewBlockquote(item.description);
+		const activityLine = `- ${activityDatePrefix} ${activityDateLink} **Rating:** ${score ?? '-'} **Rewatch:** ${isRewatch}`;		const file = this.app.vault.getAbstractFileByPath(path);
 
 		if (file instanceof TFile) {
 			// Update
@@ -602,6 +627,18 @@ class LetterboxdSettingTab extends PluginSettingTab {
 				component.setValue(this.plugin.settings.linkDate)
 				component.onChange(async (value) => {
 					this.plugin.settings.linkDate = value
+					await this.plugin.saveSettings()
+				})
+			})
+		
+		new Setting(containerEl)
+			.setName('Display Date Format')
+			.setDesc('The format to use for displaying dates when not linking to daily notes. (e.g., YYYY-MM-DD, MMMM DD, YYYY)')
+			.addText((component) => {
+				component.setPlaceholder('YYYY-MM-DD')
+				component.setValue(this.plugin.settings.displayDateFormat)
+				component.onChange(async (value) => {
+					this.plugin.settings.displayDateFormat = value
 					await this.plugin.saveSettings()
 				})
 			})
