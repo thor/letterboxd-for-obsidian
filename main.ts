@@ -374,6 +374,7 @@ export default class LetterboxdPlugin extends Plugin {
 		if (file instanceof TFile) {
 			// Update
 			await this.app.fileManager.processFrontMatter(file, (fm) => {
+				fm['title'] = title;
 				fm['source'] = url;
 				fm['year'] = filmYear;
 				if (score !== undefined) fm['score'] = score;
@@ -385,6 +386,7 @@ export default class LetterboxdPlugin extends Plugin {
 		} else {
 			// Create
 			const fmObj: any = {
+				title: title,
 				source: url,
 				year: filmYear
 			};
