@@ -14,30 +14,13 @@ interface LetterboxdSettings {
 	stars: number;
 	addReferenceId: boolean;
 	linkDate: boolean;
+	createMovieNotes: boolean;
+	movieNoteTemplate: string;
 }
 
 /**
  * Represents one item in the Letterboxd RSS feed
- * 
- * @example
- * ```
- * {
- *  "title": "Ahsoka, 2023 - ★★★★",
- *  "link": "https://letterboxd.com/fleker/film/ahsoka/",
- *  "guid": "letterboxd-review-568742403",
- *  "pubDate": "Thu, 4 Apr 2024 17:28:09 +1300",
- *  "letterboxd:watchedDate": "2024-04-04",
- *  "letterboxd:rewatch": "No",
- *  "letterboxd:filmTitle": "Ahsoka",
- *  "letterboxd:filmYear": 2023,
- *  "letterboxd:memberRating": 4,
- *  "tmdb:tvId": 114461,
- *  "description": "<p><img src=\"https://a.ltrbxd.com/resized/film-poster/1/0/5/5/4/3/0/1055430-ahsoka-0-600-0-900-crop.jpg?v=b8ec715c15\"/></p> <p>...</p> ",
- *  "dc:creator": "fleker"
- * },
- * ```
  */
-
 interface RSSEntry {
 	title: string
 	link: string
@@ -115,12 +98,18 @@ const DEFAULT_SETTINGS: LetterboxdSettings = {
 	stars: 0,
 	addReferenceId: false,
 	linkDate: true,
+	createMovieNotes: false,
+	movieNoteTemplate: 'Movies/{{title}}',
 }
 
 const decodeHtmlEntities = (text: string) => {
-	const txt = document.createElement("textarea");
-	txt.innerHTML = text;
-	return txt.value;
+	return text
+		.replace(/&amp;/g, '&')
+		.replace(/&lt;/g, '<')
+		.replace(/&gt;/g, '>')
+		.replace(/&quot;/g, '"')
+		.replace(/&#039;/g, "'")
+		.replace(/’/g, "'");
 };
 
 const objToFrontmatter = (obj: Record<string, any>): string => {
@@ -136,6 +125,17 @@ const objToFrontmatter = (obj: Record<string, any>): string => {
 	return yamlString += '---\n';
 }
 
+function slugify(text: string): string {
+	return text
+		.normalize('NFD')
+		.replace(/[\u0300-\u036f]/g, '')
+		.toLowerCase()
+		.replace(/[^\w\s-]/g, '')
+		.replace(/\s+/g, '-')
+		.replace(/-+/g, '-')
+		.trim();
+}
+
 function starParser(rating: number | undefined, star: number): string {
 	if (rating === undefined) return '';
 	switch (star) {
@@ -149,42 +149,72 @@ function starParser(rating: number | undefined, star: number): string {
 	}
 }
 
-function printOut(settings: LetterboxdSettings, item: RSSEntry) {
+function getFormattedDate(dateString: string, settings: LetterboxdSettings): string {
+	const watchedDate = settings.dateFormat
+		? moment(dateString).format(settings.dateFormat)
+		: dateString;
+	return settings.linkDate ? `[[${watchedDate}]]` : watchedDate;
+}
+
+function extractReview(descriptionHtml: string): string | null {
+	const description = document.createElement('div');
+	description.innerHTML = descriptionHtml;
+	let reviewText = Array.from(description.querySelectorAll('p'))
+		.map(p => p.textContent)
+		.filter(text => text && text.trim() !== "")
+		.join('\n\n');
+	if (reviewText.includes('Watched on')) return null;
+	return reviewText;
+}
+
+function extractReviewBlockquote(descriptionHtml: string): string {
+	const description = document.createElement('div');
+	description.innerHTML = descriptionHtml;
+	const paragraphs = Array.from(description.querySelectorAll('p'))
+		.map(p => p.textContent?.trim())
+		.filter(text => text && text !== "" && !text.includes('Watched on'));
+
+	if (paragraphs.length > 0) {
+		return paragraphs.map(p => `> ${p}`).join('\n>\n');
+	}
+	return '';
+}
+
+function generateDiaryEntry(settings: LetterboxdSettings, item: RSSEntry, internalLink?: string) {
 	let description = document.createElement('div');
 	description.innerHTML = item.description;
 	const imgElement = description.querySelector('img');
 	let img = imgElement ? imgElement.src : null;
-	let reviewText: string | null = Array.from(description.querySelectorAll('p'))
-		.map(p => p.textContent)
-		.filter(text => text && text.trim() !== "")
-		.join('\r > \r > ');
-	if (reviewText.contains('Watched on')) reviewText = null;
+	
+	// Use extracted review for processing
+	let reviewText = extractReview(item.description);
+	// Format specifically for the diary entry (replaces original map logic)
+	if (reviewText) {
+		reviewText = reviewText.split('\n\n').join('\r > \r > ');
+	}
+	
 	const filmTitle = decodeHtmlEntities(item['letterboxd:filmTitle']);
-	const watchedDate = settings.dateFormat
-		? moment(item['letterboxd:watchedDate']).format(settings.dateFormat)
-		: item['letterboxd:watchedDate'];
+	const watchedDate = getFormattedDate(item['letterboxd:watchedDate'], settings);
+
 	let stars = starParser(item['letterboxd:memberRating'], settings.stars);
 	const reference = (() => {
 		if (settings.addReferenceId) {
 			return ` ^letterboxd${item.guid.split('-')[2]}`
 		}
 		return ''
-	})()
-	const wrappedWatchedDate = (() => {
-		if (settings.linkDate) {
-			return `[[${watchedDate}]]`
-		}
-		return watchedDate
-	})()
+	})();
+
+	const link = internalLink ? internalLink : `[${filmTitle}](${item['link']})`;
+
 	switch (settings.callout) {
 		case 'List':
-			return `- ${stars?.length ? `Reviewed [${filmTitle}](${item['link']}) ` + stars : `Watched [${filmTitle}](${item['link']})`} on ${wrappedWatchedDate}`;
+			return `- ${stars?.length ? `Reviewed ${link} ` + stars : `Watched ${link}`} on ${watchedDate}`;
 		case 'ListReview':
-			return `- ${reviewText ? `Reviewed ` : `Watched `} [${filmTitle}](${item['link']}) ${stars} on ${wrappedWatchedDate} ${reviewText ? `\r >${reviewText}\n` : ''}`;
+			return `- ${reviewText ? `Reviewed ` : `Watched `} ${link} ${stars} on ${watchedDate} ${reviewText ? `\r >${reviewText}\n` : ''}`;
 		case 'Callout':
-			return `> [!letterboxd]+ ${item['letterboxd:memberRating'] !== undefined || reviewText ? 'Review: ' : 'Watched: '} [${filmTitle}](${item['link']}) ${stars} - ${wrappedWatchedDate} \r> ${reviewText ? reviewText : ''}${reference}\n`;
+			return `> [!letterboxd]+ ${item['letterboxd:memberRating'] !== undefined || reviewText ? 'Review: ' : 'Watched: '} ${link} ${stars} - ${watchedDate} \r> ${reviewText ? reviewText : ''}${reference}\n`;
 		case 'CalloutPoster':
-			return `> [!letterboxd]+ ${item['letterboxd:memberRating'] !== undefined || reviewText ? 'Review: ' : 'Watched: '} [${filmTitle}](${item['link']}) ${stars} - ${wrappedWatchedDate} \r> ${reviewText ? img ? `![${filmTitle}|200](${img}) \r> ${reviewText}` : reviewText : ''}${reference}\n`;
+			return `> [!letterboxd]+ ${item['letterboxd:memberRating'] !== undefined || reviewText ? 'Review: ' : 'Watched: '} ${link} ${stars} - ${watchedDate} \r> ${reviewText ? img ? `![${filmTitle}|200](${img}) \r> ${reviewText}` : reviewText : ''}${reference}\n`;
 	}
 }
 
@@ -199,61 +229,263 @@ export default class LetterboxdPlugin extends Plugin {
 			id: 'sync',
 			name: 'Pull newest entries',
 			callback: async () => {
-				if (!this.settings.username) {
-					throw new Error('Cannot get data for blank username')
-				}
-				requestUrl(`https://letterboxd.com/${this.settings.username}/rss/`)
-					.then(res => res.text)
-					.then(async res => {
-						const parser = new XMLParser();
-						let jObj = parser.parse(res);
-						const filename = normalizePath(this.settings.path.endsWith('.md') ? this.settings.path : this.settings.path + '.md');
-						const diaryMdArr = (jObj.rss.channel.item as RSSEntry[])
-							.sort((a, b) => {
-								const dateA = new Date(a.pubDate).getTime();
-								const dateB = new Date(b.pubDate).getTime();
-								return this.settings.sort === 'Old' ? dateA - dateB : dateB - dateA;
-							})
-							.map((item: RSSEntry) => {
-								return printOut(this.settings, item);
-							})
-						const diaryFile = this.app.vault.getFileByPath(filename)
-						if (diaryFile === null) {
-							let pathArray = this.settings.path.split('/');
-							pathArray.pop();
-							if (pathArray.length > 1) this.app.vault.createFolder(pathArray.join('/'));
-							this.app.vault.create(filename, `${diaryMdArr.join('\n')}`);
-						} else {
-							let frontMatter = '';
-							this.app.fileManager.processFrontMatter(diaryFile, (data) => {
-								if (Object.keys(data).length) frontMatter = objToFrontmatter(data);
-							});
-							this.app.vault.process(diaryFile, (data) => {
-								let diaryContentsArr = data.split('\n');
-								// If there is frontmatter, this works out how many lines to ignore.
-								if (frontMatter.length) {
-									let count = 0;
-									while (diaryContentsArr.length > 0) {
-										let firstElement = diaryContentsArr.shift();
-										if (firstElement === '---') {
-											count++;
-											if (count === 2) break;
-										}
-									}
-								}
-								const diaryContentsSet = new Set(diaryContentsArr);
-								const newEntries = diaryMdArr.filter((entry: string) => !diaryContentsSet.has(entry));
-								const finalEntries = this.settings.sort === 'Old'
-									? [...diaryContentsArr, ...newEntries]
-									: [...newEntries, ...diaryContentsArr];
-								return frontMatter.length ? frontMatter + finalEntries.join('\n') : finalEntries.join('\n');
-							})
-						}
-					})
+				await this.syncLetterboxd();
 			},
 		})
 
 		this.addSettingTab(new LetterboxdSettingTab(this.app, this));
+	}
+
+	async syncLetterboxd() {
+		if (!this.settings.username) {
+			throw new Error('Cannot get data for blank username')
+		}
+
+		const res = await requestUrl(`https://letterboxd.com/${this.settings.username}/rss/`);
+		const parser = new XMLParser();
+		let jObj = parser.parse(res.text);
+		const items = (jObj.rss.channel.item as RSSEntry[])
+			.sort((a, b) => {
+				const dateA = new Date(a.pubDate).getTime();
+				const dateB = new Date(b.pubDate).getTime();
+				return this.settings.sort === 'Old' ? dateA - dateB : dateB - dateA;
+			});
+
+		// 1. Process Movie Notes
+		const movieNoteLinks = new Map<string, string>(); // guid -> internalLink
+		if (this.settings.createMovieNotes) {
+			for (const item of items) {
+				const link = await this.createOrUpdateMovieNote(item);
+				movieNoteLinks.set(item.guid, link);
+			}
+		}
+
+		// 2. Generate Diary Entries
+		const diaryMdArr = items.map((item) => {
+			const internalLink = movieNoteLinks.get(item.guid);
+			return generateDiaryEntry(this.settings, item, internalLink);
+		});
+
+		// 3. Update Diary File
+		await this.updateDiaryFile(diaryMdArr);
+	}
+
+	async updateDiaryFile(newDiaryEntries: string[]) {
+		const filename = normalizePath(this.settings.path.endsWith('.md') ? this.settings.path : this.settings.path + '.md');
+		const diaryFile = this.app.vault.getFileByPath(filename)
+		
+		if (diaryFile === null) {
+			let pathArray = this.settings.path.split('/');
+			pathArray.pop();
+			if (pathArray.length > 1) this.app.vault.createFolder(pathArray.join('/'));
+			this.app.vault.create(filename, `${newDiaryEntries.join('\n')}`);
+		} else {
+			let frontMatter = '';
+			this.app.fileManager.processFrontMatter(diaryFile, (data) => {
+				if (Object.keys(data).length) frontMatter = objToFrontmatter(data);
+			});
+			this.app.vault.process(diaryFile, (data) => {
+				let diaryContentsArr = data.split('\n');
+				// If there is frontmatter, this works out how many lines to ignore.
+				if (frontMatter.length) {
+					let count = 0;
+					while (diaryContentsArr.length > 0) {
+						let firstElement = diaryContentsArr.shift();
+						if (firstElement === '---') {
+							count++;
+							if (count === 2) break;
+						}
+					}
+				}
+				const diaryContentsSet = new Set(diaryContentsArr);
+				const newEntries = newDiaryEntries.filter((entry: string) => !diaryContentsSet.has(entry));
+				const finalEntries = this.settings.sort === 'Old'
+					? [...diaryContentsArr, ...newEntries]
+					: [...newEntries, ...diaryContentsArr];
+				return frontMatter.length ? frontMatter + finalEntries.join('\n') : finalEntries.join('\n');
+			})
+		}
+	}
+
+	async createOrUpdateMovieNote(item: RSSEntry): Promise<string> {
+		const title = decodeHtmlEntities(item['letterboxd:filmTitle']);
+		const year = item['letterboxd:filmYear'].toString();
+		const filmYear = item['letterboxd:filmYear'];
+		// Sanitize title for filename
+		const safeTitle = title.replace(/[:/\\|?*<>\"]/g, '');
+		const slug = slugify(title);
+		
+		let path = this.settings.movieNoteTemplate
+			.replace('{{title}}', safeTitle)
+			.replace('{{year}}', year)
+			.replace('{{slug}}', slug);
+		
+		if (!path.endsWith('.md')) path += '.md';
+		path = normalizePath(path);
+
+		const folderPath = path.substring(0, path.lastIndexOf('/'));
+		if (folderPath) {
+			const folders = folderPath.split('/');
+			let currentPath = '';
+			for (const folder of folders) {
+				currentPath = currentPath === '' ? folder : currentPath + '/' + folder;
+				const existing = this.app.vault.getAbstractFileByPath(currentPath);
+				if (!existing) {
+					await this.app.vault.createFolder(currentPath).catch(() => {});
+				}
+			}
+		}
+
+		const url = item.link;
+		const score = item['letterboxd:memberRating'];
+		const watchedDateFormatted = getFormattedDate(item['letterboxd:watchedDate'], this.settings);
+		const isRewatch = item['letterboxd:rewatch'];
+		
+		const reviewBlock = extractReviewBlockquote(item.description);
+		const activityLine = `- **Watched:** ${watchedDateFormatted} **Rating:** ${score ?? '-'} **Rewatch:** ${isRewatch}`;
+
+		const file = this.app.vault.getAbstractFileByPath(path);
+
+		if (file instanceof TFile) {
+			// Update
+			await this.app.fileManager.processFrontMatter(file, (fm) => {
+				fm['source'] = url;
+				fm['year'] = filmYear;
+				if (score !== undefined) fm['score'] = score;
+				delete fm['letterboxd_url'];
+			});
+			
+			await this.rebuildMovieNoteContent(file, reviewBlock, activityLine);
+
+		} else {
+			// Create
+			const fmObj: any = {
+				source: url,
+				year: filmYear
+			};
+			if (score !== undefined) fmObj['score'] = score;
+
+			const frontmatter = objToFrontmatter(fmObj);
+			let content = frontmatter;
+			
+			content += `\n## Letterboxd`;
+
+			if (reviewBlock) {
+				content += `\n\n### Review\n\n${reviewBlock}`;
+			}
+            
+            content += `\n\n### Activity\n\n${activityLine}`;
+
+			await this.app.vault.create(path, content);
+		}
+
+		return `[[${path.replace('.md', '')}|${title}]]`;
+	}
+
+	async rebuildMovieNoteContent(file: TFile, reviewBlock: string, activityLine: string) {
+		await this.app.vault.process(file, (content) => {
+			const mainHeader = '## Letterboxd';
+			const reviewHeader = '### Review';
+			const activityHeader = '### Activity';
+
+			const lines = content.split('\n');
+			const mainHeaderIdx = lines.findIndex(l => l.trim() === mainHeader);
+
+			if (mainHeaderIdx === -1) {
+				// Create new section at the end
+				const newSection = [
+					'',
+					mainHeader,
+					...(reviewBlock ? ['', reviewHeader, '', reviewBlock] : []),
+					'',
+					activityHeader,
+					'',
+					activityLine
+				];
+				return content.trimEnd() + '\n' + newSection.join('\n');
+			}
+
+			// Find end of Letterboxd section (Next H1 or H2)
+			let sectionEndIdx = lines.length;
+			for (let i = mainHeaderIdx + 1; i < lines.length; i++) {
+				if (lines[i].match(/^#{1,2} /)) { 
+					sectionEndIdx = i;
+					break;
+				}
+			}
+
+			const sectionLines = lines.slice(mainHeaderIdx + 1, sectionEndIdx);
+			const sectionContent = sectionLines.join('\n');
+
+			// Parse Activities
+			const activityHeaderRegex = /### Activity/;
+			let activities: string[] = [];
+			
+			if (activityHeaderRegex.test(sectionContent)) {
+				const parts = sectionContent.split(activityHeaderRegex);
+				if (parts.length > 1) {
+					// Take content until next header (### or ## or #) or end
+					// Since we are inside the section, next header could be ### Review (if order flipped) or just new lines
+					// Simple split by newline and check
+					const rawActivitiesBlock = parts[1];
+					// We stop at the next line that starts with #
+					const rawLines = rawActivitiesBlock.split('\n');
+					for (const line of rawLines) {
+						const trimmed = line.trim();
+						if (trimmed.startsWith('#')) break; // Next header
+						if (trimmed.startsWith('-')) activities.push(trimmed);
+					}
+				}
+			}
+			
+			// Avoid duplicates
+			if (!activities.some(a => a === activityLine.trim())) {
+				activities.push(activityLine);
+			}
+
+			// Parse Review
+			let finalReview = reviewBlock;
+			if (!finalReview) {
+				// Try to keep existing review if no new one
+				const reviewHeaderRegex = /### Review/;
+				if (reviewHeaderRegex.test(sectionContent)) {
+					const parts = sectionContent.split(reviewHeaderRegex);
+					if (parts.length > 1) {
+						const rawReviewBlock = parts[1];
+						const rawLines = rawReviewBlock.split('\n');
+						let extractedLines = [];
+						for (const line of rawLines) {
+							if (line.trim().startsWith('#')) break; // Next header
+							if (line.trim() !== '') extractedLines.push(line);
+						}
+						finalReview = extractedLines.join('\n').trim();
+					}
+				}
+			}
+
+			// Reconstruct
+			const newSectionLines = [mainHeader];
+			if (finalReview) {
+				newSectionLines.push('');
+				newSectionLines.push(reviewHeader);
+				newSectionLines.push('');
+				newSectionLines.push(finalReview);
+			}
+			
+			newSectionLines.push('');
+			newSectionLines.push(activityHeader);
+			newSectionLines.push('');
+			newSectionLines.push(activities.join('\n'));
+			// Add blank line at end of section if needed, or rely on outer join
+			newSectionLines.push(''); 
+			
+			const before = lines.slice(0, mainHeaderIdx);
+			const after = lines.slice(sectionEndIdx);
+			
+			// Ensure clean spacing
+			let result = [...before, ...newSectionLines, ...after].join('\n');
+			return result.replace(/\n{3,}/g, '\n\n'); // Normalise multiple blank lines
+		});
 	}
 
 	async loadSettings() {
@@ -370,6 +602,28 @@ class LetterboxdSettingTab extends PluginSettingTab {
 				component.setValue(this.plugin.settings.linkDate)
 				component.onChange(async (value) => {
 					this.plugin.settings.linkDate = value
+					await this.plugin.saveSettings()
+				})
+			})
+		
+		new Setting(containerEl)
+			.setName('Create Movie Notes')
+			.setDesc('If enabled, individual notes will be created for each movie.')
+			.addToggle((component) => {
+				component.setValue(this.plugin.settings.createMovieNotes)
+				component.onChange(async (value) => {
+					this.plugin.settings.createMovieNotes = value
+					await this.plugin.saveSettings()
+				})
+			})
+
+		new Setting(containerEl)
+			.setName('Movie Note Template')
+			.setDesc('The file path template for movie notes. Use {{title}}, {{year}}, and {{slug}}.')
+			.addText((component) => {
+				component.setValue(this.plugin.settings.movieNoteTemplate)
+				component.onChange(async (value) => {
+					this.plugin.settings.movieNoteTemplate = value
 					await this.plugin.saveSettings()
 				})
 			})
