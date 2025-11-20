@@ -181,6 +181,13 @@ function extractReviewBlockquote(descriptionHtml: string): string {
 	return '';
 }
 
+function extractPosterUrl(descriptionHtml: string): string | null {
+	const tempDiv = document.createElement('div');
+	tempDiv.innerHTML = descriptionHtml;
+	const imgElement = tempDiv.querySelector('img');
+	return imgElement ? imgElement.src : null;
+}
+
 function generateDiaryEntry(settings: LetterboxdSettings, item: RSSEntry, internalLink?: string) {
 	let description = document.createElement('div');
 	description.innerHTML = item.description;
@@ -369,6 +376,7 @@ export default class LetterboxdPlugin extends Plugin {
 		}
 		
 		const reviewBlock = extractReviewBlockquote(item.description);
+		const posterUrl = extractPosterUrl(item.description);
 		const activityLine = `- ${activityDatePrefix} ${activityDateLink} **Rating:** ${score ?? '-'} **Rewatch:** ${isRewatch}`;		const file = this.app.vault.getAbstractFileByPath(path);
 
 		if (file instanceof TFile) {
@@ -378,6 +386,7 @@ export default class LetterboxdPlugin extends Plugin {
 				fm['source'] = url;
 				fm['year'] = filmYear;
 				if (score !== undefined) fm['score'] = score;
+				if (posterUrl) fm['poster_url'] = posterUrl;
 				delete fm['letterboxd_url'];
 			});
 			
@@ -391,6 +400,7 @@ export default class LetterboxdPlugin extends Plugin {
 				year: filmYear
 			};
 			if (score !== undefined) fmObj['score'] = score;
+			if (posterUrl) fmObj['poster_url'] = posterUrl;
 
 			const frontmatter = objToFrontmatter(fmObj);
 			let content = frontmatter;
