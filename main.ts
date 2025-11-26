@@ -330,8 +330,8 @@ export default class LetterboxdPlugin extends Plugin {
 
 	async createOrUpdateMovieNote(item: RSSEntry): Promise<string> {
 		const title = decodeHtmlEntities(item['letterboxd:filmTitle']);
-		const year = item['letterboxd:filmYear'].toString();
-		const filmYear = item['letterboxd:filmYear'];
+		const year = item['letterboxd:filmYear']?.toString() || "N/A";
+
 		// Sanitize title for filename
 		const safeTitle = title.replace(/[:/\\|?*<>\"]/g, '');
 		const slug = slugify(title);
@@ -384,7 +384,7 @@ export default class LetterboxdPlugin extends Plugin {
 			await this.app.fileManager.processFrontMatter(file, (fm) => {
 				fm['title'] = title;
 				fm['source'] = url;
-				fm['year'] = filmYear;
+				fm['year'] = year;
 				if (score !== undefined) fm['score'] = score;
 				if (posterUrl) fm['poster_url'] = posterUrl;
 				delete fm['letterboxd_url'];
@@ -397,7 +397,7 @@ export default class LetterboxdPlugin extends Plugin {
 			const fmObj: any = {
 				title: title,
 				source: url,
-				year: filmYear
+				year: year
 			};
 			if (score !== undefined) fmObj['score'] = score;
 			if (posterUrl) fmObj['poster_url'] = posterUrl;
