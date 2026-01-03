@@ -105,6 +105,10 @@ const DEFAULT_SETTINGS: LetterboxdSettings = {
 }
 
 const decodeHtmlEntities = (text: string) => {
+	if (!text) {
+		console.warn(`Can't decode HTML entities in a non-string of '${text}'`);
+		return text;
+	};
 	return text
 		.replace(/&amp;/g, '&')
 		.replace(/&lt;/g, '<')
@@ -193,14 +197,14 @@ function generateDiaryEntry(settings: LetterboxdSettings, item: RSSEntry, intern
 	description.innerHTML = item.description;
 	const imgElement = description.querySelector('img');
 	let img = imgElement ? imgElement.src : null;
-	
+
 	// Use extracted review for processing
 	let reviewText = extractReview(item.description);
 	// Format specifically for the diary entry (replaces original map logic)
 	if (reviewText) {
 		reviewText = reviewText.split('\n\n').join('\r > \r > ');
 	}
-	
+
 	const filmTitle = decodeHtmlEntities(item['letterboxd:filmTitle']);
 
 	let stars = starParser(item['letterboxd:memberRating'], settings.stars);
@@ -270,6 +274,12 @@ export default class LetterboxdPlugin extends Plugin {
 				const dateA = new Date(a.pubDate).getTime();
 				const dateB = new Date(b.pubDate).getTime();
 				return this.settings.sort === 'Old' ? dateA - dateB : dateB - dateA;
+			}).filter((v) => {
+				if (v['letterboxd:filmTitle'] === undefined) {
+					console.warn(`Can't process entries from Letterboxd without a film title; skipping entry '${JSON.stringify(v)}'`);
+					return false;
+				}
+				return true;
 			});
 
 		// 1. Process Movie Notes
@@ -294,7 +304,7 @@ export default class LetterboxdPlugin extends Plugin {
 	async updateDiaryFile(newDiaryEntries: string[]) {
 		const filename = normalizePath(this.settings.path.endsWith('.md') ? this.settings.path : this.settings.path + '.md');
 		const diaryFile = this.app.vault.getFileByPath(filename)
-		
+
 		if (diaryFile === null) {
 			let pathArray = this.settings.path.split('/');
 			pathArray.pop();
@@ -335,12 +345,12 @@ export default class LetterboxdPlugin extends Plugin {
 		// Sanitize title for filename
 		const safeTitle = title.replace(/[:/\\|?*<>\"]/g, '');
 		const slug = slugify(title);
-		
+
 		let path = this.settings.movieNoteTemplate
 			.replace('{{title}}', safeTitle)
 			.replace('{{year}}', year)
 			.replace('{{slug}}', slug);
-		
+
 		if (!path.endsWith('.md')) path += '.md';
 		path = normalizePath(path);
 
@@ -352,7 +362,7 @@ export default class LetterboxdPlugin extends Plugin {
 				currentPath = currentPath === '' ? folder : currentPath + '/' + folder;
 				const existing = this.app.vault.getAbstractFileByPath(currentPath);
 				if (!existing) {
-					await this.app.vault.createFolder(currentPath).catch(() => {});
+					await this.app.vault.createFolder(currentPath).catch(() => { });
 				}
 			}
 		}
@@ -360,7 +370,7 @@ export default class LetterboxdPlugin extends Plugin {
 		const url = item.link;
 		const score = item['letterboxd:memberRating'];
 		const isRewatch = item['letterboxd:rewatch'];
-		
+
 		let activityDateLink: string;
 		let activityDatePrefix: string;
 
@@ -374,10 +384,10 @@ export default class LetterboxdPlugin extends Plugin {
 			activityDateLink = formattedDateForDisplay; // No link for pubDate
 			activityDatePrefix = '**Marked as watched:**';
 		}
-		
+
 		const reviewBlock = extractReviewBlockquote(item.description);
 		const posterUrl = extractPosterUrl(item.description);
-		const activityLine = `- ${activityDatePrefix} ${activityDateLink} **Rating:** ${score ?? '-'} **Rewatch:** ${isRewatch}`;		const file = this.app.vault.getAbstractFileByPath(path);
+		const activityLine = `- ${activityDatePrefix} ${activityDateLink} **Rating:** ${score ?? '-'} **Rewatch:** ${isRewatch}`; const file = this.app.vault.getAbstractFileByPath(path);
 
 		if (file instanceof TFile) {
 			// Update
@@ -389,7 +399,7 @@ export default class LetterboxdPlugin extends Plugin {
 				if (posterUrl) fm['poster_url'] = posterUrl;
 				delete fm['letterboxd_url'];
 			});
-			
+
 			await this.rebuildMovieNoteContent(file, reviewBlock, activityLine);
 
 		} else {
@@ -404,14 +414,14 @@ export default class LetterboxdPlugin extends Plugin {
 
 			const frontmatter = objToFrontmatter(fmObj);
 			let content = frontmatter;
-			
+
 			content += `\n## Letterboxd`;
 
 			if (reviewBlock) {
 				content += `\n\n### Review\n\n${reviewBlock}`;
 			}
-            
-            content += `\n\n### Activity\n\n${activityLine}`;
+
+			content += `\n\n### Activity\n\n${activityLine}`;
 
 			await this.app.vault.create(path, content);
 		}
@@ -445,7 +455,7 @@ export default class LetterboxdPlugin extends Plugin {
 			// Find end of Letterboxd section (Next H1 or H2)
 			let sectionEndIdx = lines.length;
 			for (let i = mainHeaderIdx + 1; i < lines.length; i++) {
-				if (lines[i].match(/^#{1,2} /)) { 
+				if (lines[i].match(/^#{1,2} /)) {
 					sectionEndIdx = i;
 					break;
 				}
@@ -457,7 +467,7 @@ export default class LetterboxdPlugin extends Plugin {
 			// Parse Activities
 			const activityHeaderRegex = /### Activity/;
 			let activities: string[] = [];
-			
+
 			if (activityHeaderRegex.test(sectionContent)) {
 				const parts = sectionContent.split(activityHeaderRegex);
 				if (parts.length > 1) {
@@ -474,7 +484,7 @@ export default class LetterboxdPlugin extends Plugin {
 					}
 				}
 			}
-			
+
 			// Avoid duplicates
 			if (!activities.some(a => a === activityLine.trim())) {
 				activities.push(activityLine);
@@ -508,17 +518,17 @@ export default class LetterboxdPlugin extends Plugin {
 				newSectionLines.push('');
 				newSectionLines.push(finalReview);
 			}
-			
+
 			newSectionLines.push('');
 			newSectionLines.push(activityHeader);
 			newSectionLines.push('');
 			newSectionLines.push(activities.join('\n'));
 			// Add blank line at end of section if needed, or rely on outer join
-			newSectionLines.push(''); 
-			
+			newSectionLines.push('');
+
 			const before = lines.slice(0, mainHeaderIdx);
 			const after = lines.slice(sectionEndIdx);
-			
+
 			// Ensure clean spacing
 			let result = [...before, ...newSectionLines, ...after].join('\n');
 			return result.replace(/\n{3,}/g, '\n\n'); // Normalise multiple blank lines
@@ -642,7 +652,7 @@ class LetterboxdSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings()
 				})
 			})
-		
+
 		new Setting(containerEl)
 			.setName('Display Date Format')
 			.setDesc('The format to use for displaying dates when not linking to daily notes. (e.g., YYYY-MM-DD, MMMM DD, YYYY)')
@@ -654,7 +664,7 @@ class LetterboxdSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings()
 				})
 			})
-		
+
 		new Setting(containerEl)
 			.setName('Create Movie Notes')
 			.setDesc('If enabled, individual notes will be created for each movie.')
