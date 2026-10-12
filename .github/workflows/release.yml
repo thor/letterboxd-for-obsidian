@@ -1,21 +1,118 @@
 name: Release Obsidian plugin
 
+# Two ways to release:
+# 1. Actions tab > "Release Obsidian plugin" > Run workflow. Bumps the version,
+#    commits manifest.json, versions.json and package.json, tags, and releases.
+# 2. Bump locally with `npm version <x.y.z>`, then push the commit and tag.
+#
+# Obsidian needs the tag to match manifest.json exactly (no "v" prefix) and
+# reads manifest.json from the default branch.
+
 on:
   push:
     tags:
-      - "*"
+      - "[0-9]+.[0-9]+.[0-9]+"
+      - "[0-9]+.[0-9]+.[0-9]+-*"
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump (ignored if version is set)
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      version:
+        description: Exact version, e.g. 1.4.0 (optional)
+        type: string
+        required: false
+      draft:
+        description: Create as draft. Obsidian users see the new manifest but cannot download until it is published.
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
-  build:
+  bump:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-
+    outputs:
+      tag: ${{ steps.bump.outputs.tag }}
     steps:
-      - uses: actions/checkout@v3
+      - name: Require default branch
+        if: github.ref_name != github.event.repository.default_branch
+        run: |
+          echo "::error::Run this from ${{ github.event.repository.default_branch }}. Obsidian reads manifest.json from the default branch."
+          exit 1
 
-      - name: Use Node.js
-        uses: actions/setup-node@v3
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
         with:
-          node-version: "18.x"
+          node-version: "22.x"
+
+      - name: Bump version, commit and tag
+        id: bump
+        env:
+          BUMP: ${{ inputs.bump }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          # manifest.json is the source of truth; package.json may lag behind.
+          current=$(node -p "require('./manifest.json').version")
+          if [ -n "$VERSION" ]; then
+            new="${VERSION#v}"
+          else
+            new=$(node -e '
+              const [maj, min, pat] = process.argv[1].split("-")[0].split(".").map(Number);
+              const b = process.argv[2];
+              console.log(b === "major" ? `${maj + 1}.0.0` : b === "minor" ? `${maj}.${min + 1}.0` : `${maj}.${min}.${pat + 1}`);
+            ' "$current" "$BUMP")
+          fi
+          if git rev-parse -q --verify "refs/tags/$new" >/dev/null || git ls-remote --exit-code --tags origin "refs/tags/$new" >/dev/null; then
+            echo "::error::Tag $new already exists"
+            exit 1
+          fi
+          echo "Bumping $current -> $new"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Runs the "version" script (version-bump.mjs), commits and tags $new.
+          npm version "$new" -m "chore: release %s"
+          git push origin "HEAD:${{ github.ref_name }}" "refs/tags/$new"
+
+          echo "tag=$new" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: bump
+    # Run after bump on dispatch, or on its own for a pushed tag.
+    if: always() && (needs.bump.result == 'success' || (needs.bump.result == 'skipped' && github.event_name == 'push'))
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.bump.outputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/tags/${{ env.TAG }}
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22.x"
+
+      - name: Check tag matches manifest.json
+        run: |
+          manifest=$(node -p "require('./manifest.json').version")
+          if [ "$manifest" != "$TAG" ]; then
+            echo "::error::Tag $TAG does not match manifest.json version $manifest"
+            exit 1
+          fi
+          node -e '
+            const v = require("./versions.json");
+            if (!(process.argv[1] in v)) { console.log("::warning::versions.json has no entry for " + process.argv[1]); }
+          ' "$TAG"
 
       - name: Build plugin
         run: |
@@ -24,11 +121,14 @@ jobs:
 
       - name: Create release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRAFT: ${{ github.event_name == 'push' || inputs.draft }}
         run: |
-          tag="${GITHUB_REF#refs/tags/}"
+          assets=(main.js manifest.json)
+          [ -f styles.css ] && assets+=(styles.css)
 
-          gh release create "$tag" \
-            --title="$tag" \
-            --draft \
-            main.js manifest.json styles.css
+          flags=(--title "$TAG" --generate-notes --verify-tag)
+          [ "$DRAFT" = "true" ] && flags+=(--draft)
+          [[ "$TAG" == *-* ]] && flags+=(--prerelease)
+
+          gh release create "$TAG" "${flags[@]}" "${assets[@]}"
