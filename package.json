@@ -1,6 +1,6 @@
 {
 	"name": "letterboxd-obsidian",
-	"version": "1.0.0",
+	"version": "1.4.0",
 	"description": "This is a way to sync your Letterboxd diary plugin to Obsidian",
 	"main": "main.js",
 	"scripts": {
